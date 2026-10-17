@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, TypedDict
+
+
+@dataclass(frozen=True)
+class Issuer:
+    name: str
+    tickers: tuple[str, ...]
+    cik: int
+    sector: str
+    snapshot_date: str
+
+    @property
+    def primary_ticker(self) -> str:
+        return self.tickers[0]
+
+
+@dataclass(frozen=True)
+class Filing:
+    issuer: str
+    ticker: str
+    cik: int
+    form: str
+    filing_date: str
+    report_date: str
+    accession: str
+    primary_document: str
+    source_url: str
+    local_path: str = ""
+    is_amendment: bool = False
+
+
+@dataclass(frozen=True)
+class DocumentBlock:
+    block_id: str
+    text: str
+    block_type: Literal["text", "table"]
+    section: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Chunk:
+    chunk_id: str
+    text: str
+    strategy: Literal["fixed", "semantic"]
+    metadata: dict[str, Any]
+
+    def to_record(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Citation:
+    issuer: str
+    form: str
+    filing_date: str
+    section: str
+    source_url: str
+    chunk_id: str
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    chunk_id: str
+    text: str
+    score: float
+    metadata: dict[str, Any]
+
+
+class GraphState(TypedDict, total=False):
+    question: str
+    route: Literal["market", "fundamentals", "filings", "mixed", "unsupported"]
+    tickers: list[str]
+    filters: dict[str, Any]
+    retrieved: list[RetrievedChunk]
+    structured_context: str
+    answer: str
+    citations: list[Citation]
+    error: str

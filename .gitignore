@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.uv-cache/
+dist/
+build/
+*.egg-info/
+
+# Local data and generated artifacts
+data/raw/
+data/cache/
+data/processed/
+artifacts/
+reports/generated/
+*.parquet
+*.log
+
+# Compact, non-secret deployment artifacts may be committed after ingestion.
+!data/app/
+!data/app/*.parquet
+!data/app/bm25.json
+
+# Models and local tooling
+.cache/
+.DS_Store
