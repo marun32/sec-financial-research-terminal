@@ -32,12 +32,10 @@ def _growth(current: float, previous: float) -> float:
     return np.nan if pd.isna(previous) or previous == 0 else current / previous - 1
 
 
-def _annual_value(
-    company: pd.DataFrame, periods: list[float], metric: str, offset: int = 0
-) -> float:
+def _annual_value(company: pd.DataFrame, periods: list[str], metric: str, offset: int = 0) -> float:
     if offset >= len(periods):
         return np.nan
-    series = company[(company["metric"] == metric) & (company["fiscal_year"] == periods[offset])]
+    series = company[(company["metric"] == metric) & (company["end"] == periods[offset])]
     return float(series.iloc[-1]["value"]) if not series.empty else np.nan
 
 
@@ -50,7 +48,7 @@ def derive_company_metrics(fundamentals: pd.DataFrame) -> pd.DataFrame:
     ].copy()
     rows: list[dict[str, float | str]] = []
     for ticker, company in annual.groupby("ticker"):
-        periods = sorted(company["fiscal_year"].dropna().unique(), reverse=True)
+        periods = sorted(company["end"].dropna().astype(str).unique(), reverse=True)
         if not periods:
             continue
 
@@ -69,7 +67,8 @@ def derive_company_metrics(fundamentals: pd.DataFrame) -> pd.DataFrame:
                 "ticker": ticker,
                 "issuer": str(company.iloc[-1]["issuer"]),
                 "sector": str(company.iloc[-1]["sector"]),
-                "fiscal_year": int(periods[0]),
+                "fiscal_year": int(periods[0][:4]),
+                "period_end": periods[0],
                 "revenue_cagr_3y": (
                     (revenue / revenue_3y) ** (1 / 3) - 1
                     if revenue > 0 and revenue_3y > 0

@@ -7,16 +7,18 @@ from typing import Any
 
 import pandas as pd
 
-from .chunking import fixed_chunks, semantic_chunks
+from .cache import SemanticChunkCache
+from .chunking import fixed_chunks, load_tokenizer, semantic_chunks
 from .config import Settings
+from .filing_catalog import build_filing_catalog
 from .manifest import load_issuers
 from .models import Chunk, DocumentBlock, Filing
-from .parsing import parse_filing_file
+from .parsing import parse_filing_file, section_distribution_audit
 from .providers import NebiusClient
 from .retrieval import PineconeStore
 from .scoring import derive_company_metrics, score_companies
 from .sec_client import SECClient
-from .sparse import SparseBM25Encoder
+from .sparse import NAMESPACE_SPARSE_FILES, SparseBM25Encoder, load_sparse_encoders
 from .xbrl import build_fundamentals
 
 
@@ -48,6 +50,19 @@ def parse(settings: Settings) -> list[DocumentBlock]:
             filing = Filing(**payload)
             blocks.extend(parse_filing_file(Path(filing.local_path), filing))
     write_jsonl(settings.processed_dir / "blocks.jsonl", [asdict(block) for block in blocks])
+    audit = section_distribution_audit(blocks)
+    settings.reports_dir.mkdir(parents=True, exist_ok=True)
+    (settings.reports_dir / "section_distribution.json").write_text(
+        json.dumps(audit, indent=2), encoding="utf-8"
+    )
+    summary = audit["summary"]
+    print(
+        "Parsed "
+        f"{summary['block_count']:,} blocks from {summary['filing_count']:,} filings; "
+        f"{summary['risk_factor_block_count']:,} risk-factor blocks; "
+        f"{len(summary['missing_10k_risk_label_accessions'])} 10-Ks missing risk labels.",
+        flush=True,
+    )
     return blocks
 
 
@@ -57,26 +72,55 @@ def _load_blocks(settings: Settings) -> list[DocumentBlock]:
 
 def build_artifacts(settings: Settings) -> tuple[list[Chunk], list[Chunk]]:
     settings.ensure_local_dirs()
+    print("[1/6] Building normalized SEC fundamentals...", flush=True)
     issuers = load_issuers(settings.manifest_path)
     fundamentals = build_fundamentals(
         issuers, settings.raw_dir, settings.app_data_dir / "fundamentals.parquet"
     )
+    print("[2/6] Building authoritative filing catalog...", flush=True)
+    build_filing_catalog(settings.raw_dir, fundamentals, settings.app_data_dir / "filings.parquet")
+    print("[3/6] Calculating scorecards...", flush=True)
     score_companies(derive_company_metrics(fundamentals)).to_parquet(
         settings.app_data_dir / "scorecards.parquet", index=False
     )
+    print("[4/6] Loading the embedding-model tokenizer and building fixed chunks...", flush=True)
     blocks = _load_blocks(settings)
+    tokenizer = load_tokenizer(settings.embedding_model)
     nebius = NebiusClient(settings)
-    fixed = fixed_chunks(blocks)
-    semantic = semantic_chunks(blocks, embed=nebius.embed)
+    fixed = fixed_chunks(blocks, tokenizer=tokenizer, show_progress=True)
     write_jsonl(
         settings.processed_dir / "chunks_fixed.jsonl", [chunk.to_record() for chunk in fixed]
     )
+    print(f"      Saved {len(fixed):,} fixed chunks.", flush=True)
+    print("[5/6] Building semantic chunks with Nebius embeddings...", flush=True)
+    tokenizer_revision = str(tokenizer.init_kwargs.get("_commit_hash") or "default")
+    cache_namespace = f"{settings.embedding_model}@{tokenizer_revision}"
+    cache_path = settings.cache_dir / "semantic_sections.sqlite3"
+    with SemanticChunkCache(cache_path) as semantic_cache:
+        semantic = semantic_chunks(
+            blocks,
+            embed=nebius.embed,
+            tokenizer=tokenizer,
+            show_progress=True,
+            cache=semantic_cache,
+            cache_namespace=cache_namespace,
+        )
+        print(
+            "      Semantic cache: "
+            f"{semantic_cache.hits:,} hits, {semantic_cache.misses:,} misses, "
+            f"{semantic_cache.writes:,} writes.",
+            flush=True,
+        )
     write_jsonl(
         settings.processed_dir / "chunks_semantic.jsonl", [chunk.to_record() for chunk in semantic]
     )
-    sparse = SparseBM25Encoder()
-    sparse.fit([chunk.text for chunk in fixed + semantic])
-    sparse.save(settings.app_data_dir / "bm25.json")
+    print(f"      Saved {len(semantic):,} semantic chunks.", flush=True)
+    print("[6/6] Fitting and saving BM25 statistics...", flush=True)
+    for namespace, chunks in (("fixed-v1", fixed), ("semantic-v1", semantic)):
+        sparse = SparseBM25Encoder()
+        sparse.fit([chunk.text for chunk in chunks])
+        sparse.save(settings.app_data_dir / NAMESPACE_SPARSE_FILES[namespace])
+    print("      Artifact build complete.", flush=True)
     return fixed, semantic
 
 
@@ -86,12 +130,22 @@ def _load_chunks(path: Path) -> list[Chunk]:
 
 def index(settings: Settings) -> None:
     nebius = NebiusClient(settings)
-    sparse = SparseBM25Encoder.load(settings.app_data_dir / "bm25.json")
+    sparse = load_sparse_encoders(settings.app_data_dir)
     store = PineconeStore(settings, nebius, sparse)
     fixed = _load_chunks(settings.processed_dir / "chunks_fixed.jsonl")
     semantic = _load_chunks(settings.processed_dir / "chunks_semantic.jsonl")
-    store.upsert(fixed, "fixed-v1")
-    store.upsert(semantic, "semantic-v1")
+    print("[1/2] Streaming fixed-v1 to Pinecone...", flush=True)
+    store.index_streaming(
+        fixed, "fixed-v1", settings.cache_dir / "index_fixed-v1.json", show_progress=True
+    )
+    print("[2/2] Streaming semantic-v1 to Pinecone...", flush=True)
+    store.index_streaming(
+        semantic,
+        "semantic-v1",
+        settings.cache_dir / "index_semantic-v1.json",
+        show_progress=True,
+    )
+    print("      Pinecone indexing complete.", flush=True)
 
 
 def load_scorecards(settings: Settings) -> pd.DataFrame:

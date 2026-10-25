@@ -21,4 +21,4 @@ jobs:
       - run: uv run mypy --follow-imports=skip src/sec_fin_rag
       - run: uv run pytest -q
       - name: Scan tracked source for secrets
-        run: uv run detect-secrets scan --all-files
+        run: git ls-files -z | xargs -0 uv run detect-secrets-hook --no-verify

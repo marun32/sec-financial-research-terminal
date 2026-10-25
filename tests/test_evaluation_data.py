@@ -15,3 +15,8 @@ def test_gold_set_has_required_coverage() -> None:
         "cross_company": 4,
         "unanswerable": 4,
     }
+    answerable = [item for item in questions if not item.get("unanswerable")]
+    assert all(item.get("expected_tickers") for item in answerable)
+    assert all(item.get("expected_forms") for item in answerable)
+    assert all(item.get("expected_sections") for item in answerable)
+    assert all(item.get("expected_terms") for item in answerable)

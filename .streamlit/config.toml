@@ -1,12 +1,17 @@
+[theme]
+base = "light"
+primaryColor = "#0F766E"
+backgroundColor = "#F4F6F8"
+secondaryBackgroundColor = "#E9EEF3"
+textColor = "#172033"
+font = "sans serif"
+
+[client]
+showSidebarNavigation = false
+
 [browser]
 gatherUsageStats = false
 
 [server]
-headless = true
-
-[theme]
-base = "dark"
-primaryColor = "#37C9A5"
-backgroundColor = "#07111F"
-secondaryBackgroundColor = "#132238"
-textColor = "#E8F0F8"
+# Avoid Streamlit introspecting the large transformers module tree used by the reranker.
+fileWatcherType = "none"

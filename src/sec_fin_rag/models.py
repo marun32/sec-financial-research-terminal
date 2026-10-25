@@ -11,6 +11,7 @@ class Issuer:
     cik: int
     sector: str
     snapshot_date: str
+    aliases: tuple[str, ...] = ()
 
     @property
     def primary_ticker(self) -> str:
@@ -28,6 +29,7 @@ class Filing:
     accession: str
     primary_document: str
     source_url: str
+    snapshot_date: str = ""
     local_path: str = ""
     is_amendment: bool = False
 
@@ -60,6 +62,14 @@ class Citation:
     section: str
     source_url: str
     chunk_id: str
+    source_number: int = 0
+    source_type: Literal["filing", "xbrl", "market"] = "filing"
+
+
+@dataclass(frozen=True)
+class EvidenceItem:
+    text: str
+    citation: Citation
 
 
 @dataclass(frozen=True)
@@ -72,11 +82,16 @@ class RetrievedChunk:
 
 class GraphState(TypedDict, total=False):
     question: str
+    resolved_question: str
     route: Literal["market", "fundamentals", "filings", "mixed", "unsupported"]
     tickers: list[str]
     filters: dict[str, Any]
+    input_tickers: list[str]
+    input_filters: dict[str, Any]
+    conversation_context: dict[str, Any]
     retrieved: list[RetrievedChunk]
-    structured_context: str
+    structured_evidence: list[EvidenceItem]
     answer: str
     citations: list[Citation]
+    citation_validation: dict[str, Any]
     error: str

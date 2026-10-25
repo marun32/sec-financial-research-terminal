@@ -2,15 +2,15 @@
   "snapshot_date": "2026-09-30",
   "source": "S&P 500 Top 10 Index; issuer-level universe with share classes consolidated",
   "issuers": [
-    {"name": "NVIDIA Corporation", "tickers": ["NVDA"], "cik": 1045810, "sector": "Information Technology"},
-    {"name": "Apple Inc.", "tickers": ["AAPL"], "cik": 320193, "sector": "Information Technology"},
-    {"name": "Microsoft Corporation", "tickers": ["MSFT"], "cik": 789019, "sector": "Information Technology"},
-    {"name": "Amazon.com, Inc.", "tickers": ["AMZN"], "cik": 1018724, "sector": "Consumer Discretionary"},
-    {"name": "Alphabet Inc.", "tickers": ["GOOGL", "GOOG"], "cik": 1652044, "sector": "Communication Services"},
-    {"name": "Broadcom Inc.", "tickers": ["AVGO"], "cik": 1730168, "sector": "Information Technology"},
-    {"name": "Meta Platforms, Inc.", "tickers": ["META"], "cik": 1326801, "sector": "Communication Services"},
-    {"name": "Micron Technology, Inc.", "tickers": ["MU"], "cik": 723125, "sector": "Information Technology"},
-    {"name": "Tesla, Inc.", "tickers": ["TSLA"], "cik": 1318605, "sector": "Consumer Discretionary"},
-    {"name": "Berkshire Hathaway Inc.", "tickers": ["BRK-B", "BRK-A"], "cik": 1067983, "sector": "Financials"}
+    {"name": "NVIDIA Corporation", "tickers": ["NVDA"], "aliases": ["NVIDIA"], "cik": 1045810, "sector": "Information Technology"},
+    {"name": "Apple Inc.", "tickers": ["AAPL"], "aliases": ["Apple"], "cik": 320193, "sector": "Information Technology"},
+    {"name": "Microsoft Corporation", "tickers": ["MSFT"], "aliases": ["Microsoft"], "cik": 789019, "sector": "Information Technology"},
+    {"name": "Amazon.com, Inc.", "tickers": ["AMZN"], "aliases": ["Amazon", "Amazon.com"], "cik": 1018724, "sector": "Consumer Discretionary"},
+    {"name": "Alphabet Inc.", "tickers": ["GOOGL", "GOOG"], "aliases": ["Alphabet", "Google"], "cik": 1652044, "sector": "Communication Services"},
+    {"name": "Broadcom Inc.", "tickers": ["AVGO"], "aliases": ["Broadcom"], "cik": 1730168, "sector": "Information Technology"},
+    {"name": "Meta Platforms, Inc.", "tickers": ["META"], "aliases": ["Meta", "Meta Platforms", "Facebook"], "cik": 1326801, "sector": "Communication Services"},
+    {"name": "Micron Technology, Inc.", "tickers": ["MU"], "aliases": ["Micron", "Micron Technology"], "cik": 723125, "sector": "Information Technology"},
+    {"name": "Tesla, Inc.", "tickers": ["TSLA"], "aliases": ["Tesla"], "cik": 1318605, "sector": "Consumer Discretionary"},
+    {"name": "Berkshire Hathaway Inc.", "tickers": ["BRK-B", "BRK-A"], "aliases": ["Berkshire", "Berkshire Hathaway"], "cik": 1067983, "sector": "Financials"}
   ]
 }

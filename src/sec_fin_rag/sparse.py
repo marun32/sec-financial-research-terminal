@@ -5,7 +5,13 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
+
+NAMESPACE_SPARSE_FILES = {
+    "fixed-v1": "bm25_fixed.json",
+    "semantic-v1": "bm25_semantic.json",
+}
 
 
 def _tokens(text: str) -> list[str]:
@@ -80,3 +86,29 @@ class SparseBM25Encoder:
             average_length=payload["average_length"],
             df=payload["df"],
         )
+
+
+def load_sparse_encoders(app_data_dir: Path) -> dict[str, SparseBM25Encoder]:
+    """Load namespace-specific BM25 statistics, with legacy artifact fallback."""
+    legacy = app_data_dir / "bm25.json"
+    encoders: dict[str, SparseBM25Encoder] = {}
+    for namespace, filename in NAMESPACE_SPARSE_FILES.items():
+        path = app_data_dir / filename
+        if path.exists():
+            encoders[namespace] = SparseBM25Encoder.load(path)
+        elif legacy.exists():
+            encoders[namespace] = SparseBM25Encoder.load(legacy)
+        else:
+            raise FileNotFoundError(f"Missing sparse artifact for {namespace}: {path}")
+    return encoders
+
+
+def sparse_encoder_for(
+    encoders: SparseBM25Encoder | Mapping[str, SparseBM25Encoder], namespace: str
+) -> SparseBM25Encoder:
+    if isinstance(encoders, Mapping):
+        try:
+            return encoders[namespace]
+        except KeyError as error:
+            raise ValueError(f"No sparse encoder configured for namespace {namespace}") from error
+    return encoders

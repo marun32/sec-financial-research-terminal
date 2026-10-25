@@ -16,6 +16,7 @@ def load_issuers(path: Path) -> list[Issuer]:
             cik=int(item["cik"]),
             sector=item["sector"],
             snapshot_date=snapshot,
+            aliases=tuple(item.get("aliases", ())),
         )
         for item in payload["issuers"]
     ]

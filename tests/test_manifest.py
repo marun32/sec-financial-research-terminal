@@ -9,3 +9,4 @@ def test_manifest_has_ten_unique_issuers_and_consolidates_alphabet() -> None:
     assert len(issuers) == 10
     assert len({issuer.cik for issuer in issuers}) == 10
     assert ticker_map(issuers)["GOOG"].cik == ticker_map(issuers)["GOOGL"].cik
+    assert "Google" in ticker_map(issuers)["GOOGL"].aliases

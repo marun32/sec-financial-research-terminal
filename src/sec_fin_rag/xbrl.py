@@ -39,14 +39,26 @@ CONCEPTS: dict[str, tuple[str, ...]] = {
 
 def _facts(payload: dict[str, Any], concepts: tuple[str, ...]) -> list[dict[str, Any]]:
     us_gaap = payload.get("facts", {}).get("us-gaap", {})
-    for concept in concepts:
+    records: list[dict[str, Any]] = []
+    for priority, concept in enumerate(concepts):
         if concept not in us_gaap:
             continue
         units = us_gaap[concept].get("units", {})
         preferred = "USD/shares" if "EarningsPerShare" in concept else "USD"
-        rows: list[dict[str, Any]] = units.get(preferred) or next(iter(units.values()), [])
-        return [{**row, "concept": concept} for row in rows]
-    return []
+        if preferred in units:
+            unit, rows = preferred, units[preferred]
+        else:
+            unit, rows = next(iter(units.items()), (preferred, []))
+        records.extend(
+            {
+                **row,
+                "concept": concept,
+                "unit": unit,
+                "_concept_priority": priority,
+            }
+            for row in rows
+        )
+    return records
 
 
 def normalize_company_facts(path: Path, issuer: Issuer) -> pd.DataFrame:
@@ -56,31 +68,40 @@ def normalize_company_facts(path: Path, issuer: Issuer) -> pd.DataFrame:
         for row in _facts(payload, concepts):
             if row.get("form") not in {"10-K", "10-Q", "10-K/A", "10-Q/A"}:
                 continue
+            filed = str(row.get("filed", ""))
+            if not filed or filed > issuer.snapshot_date:
+                continue
             records.append(
                 {
                     "issuer": issuer.name,
                     "ticker": issuer.primary_ticker,
                     "cik": issuer.cik,
                     "sector": issuer.sector,
+                    "snapshot_date": issuer.snapshot_date,
                     "metric": metric,
                     "value": row.get("val"),
                     "unit": row.get("unit", "USD"),
                     "start": row.get("start"),
                     "end": row.get("end"),
-                    "filed": row.get("filed"),
+                    "filed": filed,
                     "form": row.get("form"),
                     "fiscal_year": row.get("fy"),
                     "fiscal_period": row.get("fp"),
                     "accession": row.get("accn"),
                     "concept": row.get("concept"),
+                    "_concept_priority": row.get("_concept_priority", 0),
                 }
             )
     frame = pd.DataFrame.from_records(records)
     if frame.empty:
         return frame
-    return frame.sort_values("filed").drop_duplicates(
-        ["ticker", "metric", "end", "form", "fiscal_period"], keep="last"
-    )
+    # Prefer the latest filing for a period and, within the same filing, the first concept in the
+    # configured fallback order. Combining concepts prevents a stale historical tag from hiding
+    # current facts reported under a successor tag.
+    frame = frame.sort_values(
+        ["filed", "_concept_priority"], ascending=[True, False], kind="stable"
+    ).drop_duplicates(["ticker", "metric", "end", "form", "fiscal_period"], keep="last")
+    return frame.drop(columns="_concept_priority")
 
 
 def build_fundamentals(issuers: list[Issuer], raw_dir: Path, output: Path) -> pd.DataFrame:

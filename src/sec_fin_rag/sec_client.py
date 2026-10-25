@@ -81,10 +81,67 @@ class SECClient:
         url = f"https://data.sec.gov/submissions/CIK{cik}.json"
         return self.get_json(url, Path("submissions") / f"CIK{cik}.json")
 
+    def submission_archive(self, filename: str) -> dict[str, Any]:
+        url = f"https://data.sec.gov/submissions/{filename}"
+        return self.get_json(url, Path("submissions") / filename)
+
     def company_facts(self, issuer: Issuer) -> dict[str, Any]:
         cik = f"{issuer.cik:010d}"
         url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
         return self.get_json(url, Path("companyfacts") / f"CIK{cik}.json")
+
+    @staticmethod
+    def _merge_submission_rows(
+        recent: dict[str, list[Any]], archive: dict[str, list[Any]]
+    ) -> dict[str, list[Any]]:
+        recent_count = max((len(values) for values in recent.values()), default=0)
+        archive_count = max((len(values) for values in archive.values()), default=0)
+        keys = list(dict.fromkeys([*recent, *archive]))
+
+        def padded(values: list[Any] | None, length: int) -> list[Any]:
+            existing = list(values or [])
+            return existing + [""] * (length - len(existing))
+
+        return {
+            key: [
+                *padded(recent.get(key), recent_count),
+                *padded(archive.get(key), archive_count),
+            ]
+            for key in keys
+        }
+
+    @staticmethod
+    def _has_filing_targets(filings: list[Filing]) -> bool:
+        return (
+            sum(filing.form == "10-K" for filing in filings) >= 3
+            and sum(filing.form == "10-Q" for filing in filings) >= 4
+        )
+
+    def complete_submissions(self, issuer: Issuer, submissions: dict[str, Any]) -> dict[str, Any]:
+        """Add SEC archive segments only until the snapshot filing targets are satisfied."""
+        filings = dict(submissions.get("filings", {}))
+        recent = {key: list(values) for key, values in filings.get("recent", {}).items()}
+        combined = {**submissions, "filings": {**filings, "recent": recent}}
+        if self._has_filing_targets(self.select_filings(issuer, combined)):
+            return combined
+
+        archive_files = sorted(
+            filings.get("files", []),
+            key=lambda item: str(item.get("filingTo", "")),
+            reverse=True,
+        )
+        for archive_metadata in archive_files:
+            if str(archive_metadata.get("filingFrom", "")) > issuer.snapshot_date:
+                continue
+            filename = str(archive_metadata.get("name", ""))
+            if not filename:
+                continue
+            archive = self.submission_archive(filename)
+            recent = self._merge_submission_rows(recent, archive)
+            combined = {**submissions, "filings": {**filings, "recent": recent}}
+            if self._has_filing_targets(self.select_filings(issuer, combined)):
+                break
+        return combined
 
     def select_filings(self, issuer: Issuer, submissions: dict[str, Any]) -> list[Filing]:
         recent = submissions["filings"]["recent"]
@@ -92,26 +149,50 @@ class SECClient:
             dict(zip(recent, values, strict=False))
             for values in zip(*recent.values(), strict=False)
         ]
-        selected: list[Filing] = []
-        base_counts = {"10-K": 0, "10-Q": 0}
         limits = {"10-K": 3, "10-Q": 4}
-        included_bases: set[str] = set()
+        eligible = [
+            row
+            for row in rows
+            if str(row.get("form", "")).removesuffix("/A") in limits
+            and bool(row.get("filingDate"))
+            and str(row.get("filingDate", "")) <= issuer.snapshot_date
+        ]
+        eligible.sort(
+            key=lambda row: (str(row.get("filingDate", "")), str(row.get("accessionNumber", ""))),
+            reverse=True,
+        )
 
-        for row in rows:
+        base_rows: list[dict[str, Any]] = []
+        selected_periods: set[tuple[str, str]] = set()
+        for base_form, limit in limits.items():
+            selected_for_form = [row for row in eligible if str(row.get("form", "")) == base_form][
+                :limit
+            ]
+            base_rows.extend(selected_for_form)
+            selected_periods.update(
+                (base_form, str(row.get("reportDate", ""))) for row in selected_for_form
+            )
+
+        amendment_rows = [
+            row
+            for row in eligible
+            if str(row.get("form", "")).endswith("/A")
+            and (
+                str(row.get("form", "")).removesuffix("/A"),
+                str(row.get("reportDate", "")),
+            )
+            in selected_periods
+        ]
+        selected_rows = sorted(
+            base_rows + amendment_rows,
+            key=lambda row: (str(row.get("filingDate", "")), str(row.get("accessionNumber", ""))),
+            reverse=True,
+        )
+
+        selected: list[Filing] = []
+        for row in selected_rows:
             form = str(row.get("form", ""))
-            base_form = form.removesuffix("/A")
-            if base_form not in limits:
-                continue
             accession = str(row["accessionNumber"])
-            is_amendment = form.endswith("/A")
-            if is_amendment:
-                if base_form not in included_bases and base_counts[base_form] >= limits[base_form]:
-                    continue
-            elif base_counts[base_form] >= limits[base_form]:
-                continue
-            if not is_amendment:
-                base_counts[base_form] += 1
-                included_bases.add(base_form)
             primary = str(row["primaryDocument"])
             source_url = (
                 "https://www.sec.gov/Archives/edgar/data/"
@@ -128,13 +209,14 @@ class SECClient:
                     accession=accession,
                     primary_document=primary,
                     source_url=source_url,
-                    is_amendment=is_amendment,
+                    snapshot_date=issuer.snapshot_date,
+                    is_amendment=form.endswith("/A"),
                 )
             )
         return selected
 
     def download_issuer(self, issuer: Issuer, output_dir: Path) -> list[Filing]:
-        submissions = self.submissions(issuer)
+        submissions = self.complete_submissions(issuer, self.submissions(issuer))
         facts = self.company_facts(issuer)
         facts_path = output_dir / "companyfacts" / f"{issuer.cik:010d}.json"
         facts_path.parent.mkdir(parents=True, exist_ok=True)

@@ -15,6 +15,7 @@ class Check:
     name: str
     passed: bool
     detail: str
+    required: bool = True
 
 
 def run_preflight(settings: Settings) -> list[Check]:
@@ -22,7 +23,6 @@ def run_preflight(settings: Settings) -> list[Check]:
     required = {
         "NEBIUS_API_KEY": settings.nebius_api_key,
         "PINECONE_API_KEY": settings.pinecone_api_key,
-        "LANGSMITH_API_KEY": settings.langsmith_api_key,
         "SEC_USER_AGENT": settings.sec_user_agent,
     }
     for name, value in required.items():
@@ -47,7 +47,9 @@ def run_preflight(settings: Settings) -> list[Check]:
                 iter(LangSmithClient(api_key=settings.langsmith_api_key).list_datasets(limit=1)),
                 None,
             )
-            checks.append(Check("LangSmith", True, "connection successful"))
+            checks.append(Check("LangSmith", True, "optional connection successful", False))
         except Exception as error:
-            checks.append(Check("LangSmith", False, safe_error(error)))
+            checks.append(Check("LangSmith", False, f"optional: {safe_error(error)}", False))
+    else:
+        checks.append(Check("LangSmith", True, "optional; disabled", False))
     return checks
