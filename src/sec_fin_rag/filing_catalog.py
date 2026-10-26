@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,20 @@ CATALOG_COLUMNS = [
     "source_url",
     "is_amendment",
 ]
+
+
+def sec_filing_index_url(cik: int, accession: str | None) -> str | None:
+    """Link to the SEC filing-detail page for any Company Facts accession."""
+    if (
+        cik <= 0
+        or not isinstance(accession, str)
+        or not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession)
+    ):
+        return None
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/{cik}/"
+        f"{accession.replace('-', '')}/{accession}-index.htm"
+    )
 
 
 def _period_labels(fundamentals: pd.DataFrame) -> pd.DataFrame:

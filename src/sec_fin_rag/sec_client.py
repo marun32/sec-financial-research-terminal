@@ -143,6 +143,13 @@ class SECClient:
                 break
         return combined
 
+    def cache_submission_history(self, issuer: Issuer, submissions: dict[str, Any]) -> None:
+        """Cache lightweight archive metadata needed to verify historical XBRL provenance."""
+        for item in submissions.get("filings", {}).get("files", []):
+            filename = str(item.get("name", ""))
+            if filename and str(item.get("filingFrom", "")) <= issuer.snapshot_date:
+                self.submission_archive(filename)
+
     def select_filings(self, issuer: Issuer, submissions: dict[str, Any]) -> list[Filing]:
         recent = submissions["filings"]["recent"]
         rows = [
@@ -216,7 +223,9 @@ class SECClient:
         return selected
 
     def download_issuer(self, issuer: Issuer, output_dir: Path) -> list[Filing]:
-        submissions = self.complete_submissions(issuer, self.submissions(issuer))
+        current_submissions = self.submissions(issuer)
+        submissions = self.complete_submissions(issuer, current_submissions)
+        self.cache_submission_history(issuer, current_submissions)
         facts = self.company_facts(issuer)
         facts_path = output_dir / "companyfacts" / f"{issuer.cik:010d}.json"
         facts_path.parent.mkdir(parents=True, exist_ok=True)

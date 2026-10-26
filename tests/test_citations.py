@@ -26,6 +26,7 @@ def test_invalid_inline_source_markers_are_not_rendered_as_valid_citations() -> 
 
 def test_model_specific_citation_glyphs_are_normalized() -> None:
     assert normalize_source_markers("A【Source 3】 B【1†text】") == "A[Source 3] B[Source 1]"
+    assert normalize_source_markers("Growth [Sources 1 & 2]") == ("Growth [Source 1] [Source 2]")
 
 
 def test_exports_redact_secret_keys_and_token_patterns() -> None:

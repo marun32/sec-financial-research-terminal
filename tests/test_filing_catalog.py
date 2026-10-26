@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from sec_fin_rag.filing_catalog import build_filing_catalog
+from sec_fin_rag.filing_catalog import build_filing_catalog, sec_filing_index_url
+
+
+def test_sec_filing_index_url_supports_historical_company_facts() -> None:
+    assert sec_filing_index_url(1326801, "0001326801-21-000014") == (
+        "https://www.sec.gov/Archives/edgar/data/1326801/"
+        "000132680121000014/0001326801-21-000014-index.htm"
+    )
+    assert sec_filing_index_url(1326801, "invalid") is None
 
 
 def test_catalog_uses_official_report_date_not_comparative_fact_date(tmp_path: Path) -> None:

@@ -3,7 +3,7 @@
 **Project type:** Financial Document Intelligence RAG application  
 **Implementation track:** Python, LangChain, and LangGraph, with optional LangSmith observability  
 **Documentation version:** 1.0  
-**Last verified:** October 19, 2026  
+**Last verified:** October 25, 2026
 **Financial-data snapshot:** September 30, 2026
 
 ## 1. Executive summary
@@ -70,7 +70,8 @@ Fin AI is a research terminal, not a brokerage or trading system. Its interface 
 3. **Peer Analysis:** Growth, Profitability, Financial Strength, and Balanced scorecards with
    visible drivers, weights, missing-data coverage, and cross-sector warnings.
 4. **Research Assistant:** filing and structured-data questions with synthesized answers, inline
-   numbered citations, compact references, and optional evidence excerpts.
+   numbered citations, compact references, optional evidence excerpts, and a collapsible live
+   research-progress panel.
 5. **About & Data:** analyst-facing coverage, source, scoring, and limitation explanations.
 
 The visual system uses a graphite horizontal navigation bar, warm-gray workspace, white research
@@ -100,14 +101,15 @@ Research Assistant additionally queries the existing index and calls the configu
 
 ```mermaid
 flowchart TD
-    Q[Analyst asks a question in Streamlit] --> C[Resolve company, year, form, metrics, and prior conversation context]
-    C --> R{LangGraph rules choose route}
+    Q[Analyst asks a question in Streamlit] --> P[Nebius plans issuers, metrics, years, period basis, and intent]
+    P --> C[Validate plan against request, snapshot, and prior conversation context]
+    C --> R{LangGraph chooses route}
     R -->|market| M[Get delayed yfinance context]
     R -->|fundamentals| X[Read filtered SEC XBRL facts]
     R -->|filings| H[Dense and BM25 filing search; local reranking]
     R -->|mixed| XM[Collect applicable evidence]
     R -->|unsupported| U[Return refusal]
-    X --> H
+    X -. when filing explanation is needed .-> H
     XM --> X
     XM --> H
     XM -. when market terms are present .-> M
@@ -121,13 +123,17 @@ flowchart TD
 ```
 
 1. **Understand the request.** Streamlit passes the question and any optional company, form,
-   year, or retrieval-strategy controls to a LangGraph conversation thread. Rules resolve issuer
-   names/share classes and infer explicit years, filing forms, and metric names. The thread keeps
+   year, or retrieval-strategy controls to a LangGraph conversation thread. Nebius first returns
+   a structured research plan (issuers, metrics, years, annual/quarterly/YTD basis, and intent).
+   The app validates explicit ranges and issuer/metric names before the plan can filter evidence.
+   The thread keeps
    company, topic, form, and year context for follow-up questions; clearing the conversation starts
    a new thread.
-2. **Choose evidence.** The route is selected by deterministic intent rules, not by an LLM agent.
-   A fundamentals request reads normalized XBRL facts **and** searches filing passages for
-   explanatory context. A filing request searches passages; a market request reads delayed quotes;
+2. **Choose evidence.** Validated plan fields refine the graph's deterministic safety and routing
+   rules; the model cannot bypass unsupported-intent refusals. Multi-year numeric questions select
+   the relevant XBRL periods directly, without restricting retrieval to the first year or letting
+   a handful of recent quarterly facts displace older annual facts. Filing search is added when
+   explanation is needed. A filing request searches passages; a market request reads delayed quotes;
    a mixed request collects the applicable sources. Unsupported requests end at the refusal node.
 3. **Retrieve relevant filings when needed.** The question is converted to a Nebius dense
    embedding and a namespace-specific BM25 sparse query. Pinecone returns up to 30 hybrid
@@ -145,6 +151,13 @@ flowchart TD
    Evidence excerpts remain available in an optional expander. Marker validation cannot prove
    that the cited passage supports every claim; that requires the separate answer evaluation and
    manual review described in Sections 13–14.
+
+The Research Assistant streams completed LangGraph node updates to a progress panel. It starts
+with planning, then shows the validated evidence route, the actual source-collection result, and
+answer/citation completion. Route-aware text distinguishes direct XBRL lookups from Pinecone
+filing search, market lookups, and unsupported questions; it does not present skipped work as
+completed. The panel collapses after the answer and its step log remains expandable in chat
+history. This is UI feedback, not a new ingestion stage or a substitute for LangSmith tracing.
 
 For example, **“What was Meta's revenue in 2025?”** resolves to META, year 2025, and the revenue
 metric. The fundamentals route filters normalized SEC XBRL facts to that reporting year, retrieves
@@ -189,7 +202,9 @@ the issuer/CIK level.
 For every issuer, ingestion selects the latest three base 10-Ks and four base 10-Qs filed on or
 before the snapshot. Amendments matching those selected reporting periods are retained as
 supplemental sources. Archived SEC submission files are loaded when the current submissions feed
-does not contain enough eligible history.
+does not contain enough eligible history. The downloader also caches the lightweight historical
+submission metadata for each issuer, enabling fact-to-filing report-period checks without
+downloading additional full filings.
 
 ### 4.3 Current artifact inventory
 
@@ -199,7 +214,7 @@ does not contain enough eligible history.
 | Parsed contextual blocks | 43,403 |
 | Fixed chunks | 20,027 |
 | Semantic chunks | 16,462 |
-| Normalized XBRL facts | 10,718 |
+| Normalized XBRL facts | 10,929 |
 | Issuer scorecard rows | 10 |
 | Gold evaluation questions | 30 |
 
@@ -351,6 +366,21 @@ The filing catalog deliberately separates a filing's official `report_date` from
 context dates. A single 10-Q may contain current and comparative periods; those comparison dates
 are valid facts but must never be displayed as the filing period end.
 
+`finrag build-structured` reruns only the first three stages from cached SEC Company Facts and
+filing manifests. Use it after a fact-normalization or scorecard change; it leaves parsed filing
+blocks, fixed/semantic chunks, BM25 statistics, and Pinecone namespaces untouched. Fact identity
+includes both `start` and `end`, preserving separate three-month and cumulative durations with
+the same end date. The source filing's `fy`/`fp` labels remain available for provenance but are
+not treated as the fiscal period of every comparative fact.
+For each fact period, normalization now prefers an original-period filing (or a matching-period
+amendment) using cached SEC submission report dates. If that metadata is unavailable, it falls
+back to the earliest filing that reported the fact and labels its source report period as
+unverified. Two older Broadcom annual revenue facts in the latest ten-year view remain sourced
+from a later comparative filing because no matching-period filing is present in this issuer's
+Company Facts history; the UI warns when a known source report end differs from the fact end.
+Ask Fin AI groups structured facts by accession and cites the corresponding SEC filing detail
+page rather than attributing multiple periods to one generic source date.
+
 ### 7.5 Index
 
 `finrag index` embeds and uploads chunks in bounded batches with a progress bar, retries, and a
@@ -462,13 +492,14 @@ retrieved evidence, structured evidence, answer, citations, validation result, a
 Streamlit conversation receives a unique LangGraph `thread_id`; an in-memory checkpointer retains
 the resolved company, route, reporting year, filing form, and requested metrics between turns.
 Follow-ups such as “How about 2025?” can therefore inherit the prior company and topic while
-overriding the year. Explicit years in natural language are applied to both XBRL period selection
-and Pinecone report-year filters. Deterministic routing selects:
+overriding the year. A Nebius planning node extracts structured intent first; validation then
+expands explicit year ranges and checks the frozen issuer universe and snapshot. Deterministic
+safety rules and validated plan fields select:
 
 | Route | Evidence behavior |
 |---|---|
 | `market` | Delayed `yfinance` evidence |
-| `fundamentals` | XBRL numeric evidence plus filing RAG for explanatory context |
+| `fundamentals` | XBRL numeric evidence; filing RAG when explanatory context is needed |
 | `filings` | Filing RAG |
 | `mixed` | XBRL, optional market context, and filing RAG |
 | `unsupported` | Refusal for personalized advice, exact price predictions, or confidential information |
@@ -476,6 +507,11 @@ and Pinecone report-year filters. Deterministic routing selects:
 If no evidence is returned, the graph states that sufficient configured evidence was not found.
 If generated citations remain invalid after one repair attempt, it fails closed rather than
 displaying uncited factual claims.
+
+The app uses the graph's `updates` stream for progress feedback. Each node-completion update
+advances the research status and contributes a short, persistent step label to the chat message;
+the final state is read from the thread checkpoint. Calls without a progress callback retain the
+normal `invoke` path, so evaluation and programmatic consumers are unchanged.
 
 ### Optional LangSmith observability
 
@@ -657,6 +693,8 @@ git status --ignored --short
 | LangSmith evaluation responsibility was unclear | LangSmith and the judge model were treated as the same service | Documented that LangSmith manages datasets, experiments, and traces while Nebius supplies generation and judge inference. |
 | Financial-overview questions omitted available metrics | The deterministic router recognized named metrics but not broad phrases such as “financial information” | Expanded fundamental intent and route broad financial overviews through XBRL plus filing evidence. |
 | Follow-up questions lost company/topic context | Streamlit stored messages for display, but each graph invocation was stateless and received only the newest question | Added LangGraph checkpointed thread state, structured research context, natural-language year extraction, and new-thread reset on Clear conversation. |
+| Multi-year revenue questions falsely reported missing years | Single-year inference selected only the first year in a range; a latest-eight-facts limit then favored recent quarters over older annual facts | Added an LLM research-planning node with deterministic validation of year ranges, metrics, issuers, and period basis; select annual/quarterly/YTD XBRL facts directly for multi-period numeric questions, and keep interim comparisons separate from full-year YoY. No filing/vector rebuild is needed. |
+| Company trend labels confused comparative facts, and quarter facts disappeared | XBRL `fy`/`fp` describe the source filing, while normalizing on end date alone collapsed three-month and year-to-date facts | Preserve each fact's start/end duration, show it in trends and chat evidence, label source filing metadata separately, and rebuild only structured artifacts. |
 
 ## 17. Lessons and observations
 
@@ -683,8 +721,8 @@ git status --ignored --short
 
 1. Retrieval Hit@10 and evidence Recall@10 remain below the 80% goal; trends and multi-period
    synthesis are weakest.
-2. The router is deterministic keyword logic and may misclassify unusual phrasing.
-   Conversation state is currently process-local; a Streamlit process restart clears the
+2. An LLM proposes research intent, but rule validation and the router can still misclassify
+   unusual phrasing. Conversation state is currently process-local; a Streamlit process restart clears the
    checkpointer even though visible session messages may still exist.
 3. XBRL normalization covers selected common US-GAAP concepts, not every issuer extension or every
    possible debt/segment taxonomy.
@@ -739,6 +777,9 @@ uv run finrag parse
 uv run finrag build-artifacts
 uv run finrag index
 ```
+
+For a structured-facts-only correction, run `uv run finrag build-structured` instead of repeating
+chunk construction and indexing.
 
 Or execute the offline flow plus retrieval evaluation:
 
@@ -798,11 +839,18 @@ uv run streamlit run streamlit_app.py
 
 ## 21. Verification baseline
 
-As of October 19, 2026:
+As of October 25, 2026:
 
 - Ruff lint and formatting checks pass.
-- Strict mypy passes for the application source.
-- All 76 pytest tests pass.
+- The filing-link helper passes mypy. A full-source mypy 2.4 check currently reports 14
+  existing unused-ignore/redundant-cast diagnostics in six modules; these are not runtime failures.
+- All 95 pytest tests pass, including graph progress events and completed-chat status persistence.
+- The targeted structured-facts rebuild completes from cached SEC data and retains both Meta's
+  standalone Q2 2025 revenue ($47.516 billion) and six-month revenue ($89.830 billion).
+- A live Ask Fin AI check returns those two amounts with a valid citation to Meta's
+  July 31, 2025 10-Q; a separate 2022 annual-revenue check cites the 2022-period 10-K.
+- Meta's latest ten annual revenue rows now link to 10-Ks whose official report dates match the
+  facts' own period ends, including 2022 revenue in the 2022-period 10-K filed February 2, 2023.
 - The Streamlit health endpoint responds successfully.
 - The parser section audit finds no base 10-K without an Item 1A label.
 - Pinecone namespace counts match the local fixed and semantic chunk counts from the completed
@@ -812,3 +860,37 @@ As of October 19, 2026:
 
 This document is the single canonical project narrative. Generated reports remain machine outputs,
 and the README remains the concise repository entry point.
+
+## 22. Five-minute video demonstration plan
+
+The Week 2 handout asks for a **video of five minutes or less** that walks through the application,
+explains the build, describes the use of AI coding tools, and shows the final result live. For this
+use case, the evidence to emphasize is the working cited RAG answer, fixed-versus-semantic
+chunking comparison, and measured reranking impact. Aim for **4:45** to leave a small recording
+buffer.
+
+| Time | On screen | Narration and action | Point established |
+|---|---|---|---|
+| 0:00–0:30 | Dashboard | “Fin AI helps public-market researchers ask questions across SEC 10-K and 10-Q filings and structured Company Facts. The research universe is ten issuers frozen to September 30, 2026. Delayed quotes are context, not the source for filing answers.” Show the snapshot and company coverage. | User, problem, corpus, and source boundaries |
+| 0:30–1:00 | Company Intelligence: META | Show the common-period revenue, net income, cash flow, and assets cards; point to the reporting period and SEC filing history. “Figures come from normalized XBRL, and filing dates come from SEC manifests.” | Structured facts and period accuracy |
+| 1:00–1:20 | Peer Analysis | Show one scorecard, its component weights, and coverage. “These are transparent calculations from reported facts, not model-generated investment ratings.” Mention the cross-sector warning if shown. | Business value beyond chat, with honest interpretation |
+| 1:20–2:50 | Research Assistant | Type **“What diluted earnings per share did Meta report for the latest fiscal year?”** Show the live progress as the model plans the request, the graph chooses its evidence path, and SEC evidence is collected. When the panel collapses, reopen it briefly, then point to the amount, reporting period, and **References**. “The model plans the research question, validated graph routing selects XBRL facts and any needed filing passages, and the answer is written from that evidence with checked source markers.” | Live research flow, cited RAG result, and traceability |
+| 2:50–3:40 | Documentation: Sections 7–10 | Show the offline ingestion flow and chunking description. “We download primary SEC HTML and Company Facts, preserve tables, compare 512-token fixed chunks with semantic chunks over the same content, then store both in separate Pinecone namespaces. At query time we combine embeddings and BM25, retrieve candidates, and rerank locally.” | Required chunking experiment and actual architecture |
+| 3:40–4:10 | Documentation: Section 14 | Point to the fixed/semantic table and reranking table. “Our gold set has 30 questions; retrieval is scored on the 26 answerable ones. Fixed and semantic each reached 42.3% Hit@10 after reranking. In the tested ensemble configuration, reranking improved Hit@10 from 38.5% to 53.8%. Retrieval remains below our 80% target, especially for multi-period trends.” | Measured comparison, improvement, and limitation |
+| 4:10–4:45 | Documentation: Section 16, then app or repository | “I used Codex as a coding partner for the ingestion pipeline, token-aware splitting, retrieval, UI, and tests. I validated its work against SEC source data and evaluation runs. One example: a 10-Q screen showed a comparative XBRL period as the filing period end, so we built a separate filing catalog from SEC manifests. The repository and this report include the implementation, metrics, and limitations.” | Required AI-tool explanation, iteration, and deliverables |
+
+### Recording preparation
+
+1. Start the app with `uv run streamlit run streamlit_app.py` from the repository root and open
+   its local URL. Open the documentation at Sections 7–10 and 14, and the repository in separate
+   tabs. Set readable browser zoom and hide notifications or other personal desktop content.
+2. Check that the Streamlit app, Pinecone, and Nebius respond before recording; ask the Meta
+   question once as a rehearsal, then clear the conversation. Do not spend the recording running
+   ingestion or the full evaluation, which are offline jobs.
+3. During the live answer, read what the app actually returned before describing it. The earlier
+   `generation-v5` evaluation completed this exact question with a cited Meta diluted EPS answer,
+   but a fresh provider response can differ. If it fails, restart the take after diagnosing it;
+   do not claim that a failed response demonstrated grounded RAG.
+4. Keep LangSmith, deployment setup, full scorecard mathematics, and every individual metric out
+   of the spoken walkthrough unless time remains. The rubric's central comparison and a working
+   cited answer have priority.

@@ -18,7 +18,9 @@ A source-cited research workspace for retail investors. The project compares fix
 - Nebius embeddings and generation
 - Pinecone hybrid search and local cross-encoder reranking
 - LangChain embedding/retriever adapters and LCEL answer generation
-- LangGraph routing with optional LangSmith tracing/export
+- Nebius question planning and LangGraph routing with optional LangSmith tracing/export
+- Live, collapsible Ask Fin AI progress showing planning, evidence routing, actual source collection,
+  and answer/citation checks
 - Five-page Streamlit interface
 - A 30-question evaluation set and retrieval metrics
 
@@ -44,6 +46,13 @@ uv run finrag index
 uv run finrag evaluate
 ```
 
+If only Company Facts normalization, filing metadata, or scorecards change, rebuild their compact
+artifacts without recomputing chunks or Pinecone vectors:
+
+```bash
+uv run finrag build-structured
+```
+
 Or run the offline stages together:
 
 ```bash
@@ -59,6 +68,14 @@ non-secret deployment artifacts are written to `data/app/` and may be committed 
 ```bash
 uv run streamlit run streamlit_app.py
 ```
+
+Ask Fin AI follows `plan → route → evidence → answer`. The planning model identifies issuers,
+metrics, periods, and intent; validated LangGraph routing then reads SEC XBRL facts, searches and
+reranks Pinecone filing passages, checks delayed market context, or applies the unsupported-answer
+guardrail as appropriate. The assistant generates from the evidence and validates source markers.
+Its progress panel updates when each graph node actually finishes, collapses after completion,
+and remains expandable in that chat answer. A numeric-only multi-year question can use XBRL
+without searching Pinecone; the panel reflects the path that ran.
 
 For Streamlit Community Cloud, copy the variables from `.env.example` into the deployment's Secrets panel. Do not commit `.streamlit/secrets.toml`.
 

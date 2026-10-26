@@ -6,6 +6,13 @@ import plotly.express as px
 import streamlit as st
 
 from sec_fin_rag.config import get_settings
+from sec_fin_rag.fact_periods import (
+    PERIOD_LABELS,
+    annual_fact_rows,
+    quarter_fact_rows,
+    with_fact_periods,
+)
+from sec_fin_rag.filing_catalog import sec_filing_index_url
 from sec_fin_rag.ui import (
     artifact_notice,
     format_large,
@@ -38,8 +45,8 @@ if not path.exists():
     st.stop()
 
 facts = pd.read_parquet(path)
-company = facts[facts["ticker"] == selected.primary_ticker].copy()
-annual = company[company["form"].str.startswith("10-K")].copy()
+company = with_fact_periods(facts[facts["ticker"] == selected.primary_ticker].copy())
+annual = annual_fact_rows(company[company["form"].str.startswith("10-K")])
 annual = annual.sort_values(["end", "filed"]).drop_duplicates(["metric", "end"], keep="last")
 
 header_left, header_right = st.columns([4, 1])
@@ -196,7 +203,21 @@ with trends_tab:
     trend = company[
         company["form"].str.startswith(form_prefix) & (company["metric"] == trend_metric)
     ].copy()
-    trend = trend.sort_values(["end", "filed"]).drop_duplicates("end", keep="last")
+    quarterly_basis = "3-month quarter"
+    if period == "Annual":
+        trend = annual_fact_rows(trend)
+    elif trend["start"].notna().any():
+        quarterly_basis = st.segmented_control(
+            "Quarterly basis", ["3-month quarter", "Year to date"], default="3-month quarter"
+        )
+        if quarterly_basis == "Year to date":
+            trend = trend[
+                trend["period_type"].isin(["six_months", "nine_months"])
+                | ((trend["period_type"] == "three_months") & (trend["fiscal_period"] == "Q1"))
+            ]
+        else:
+            trend = quarter_fact_rows(trend)
+    trend = trend.sort_values(["end", "duration_days", "filed"]).drop_duplicates("end", keep="last")
     if trend.empty:
         st.info("No normalized facts match this selection.")
     else:
@@ -210,25 +231,74 @@ with trends_tab:
         )
         figure.update_traces(line_color="#38bdf8", marker_color="#2dd4bf", line_width=3)
         st.plotly_chart(plotly_layout(figure), width="stretch")
-        st.caption(
-            "Quarterly SEC facts may represent year-to-date durations depending on the issuer’s XBRL presentation. Filing and period details are shown below."
+        if period == "Annual":
+            st.caption(
+                "Annual chart: full-year duration facts and period-end balances. Values below "
+                "are rounded for display; exact figures are in Raw XBRL data. Source report end "
+                "shows whether the linked filing covers that same period."
+            )
+        elif quarterly_basis == "Year to date":
+            st.caption(
+                "Year-to-date view: six- and nine-month cumulative facts; Q1 is three months. "
+                "These are not standalone quarterly amounts."
+            )
+        else:
+            st.caption(
+                "Quarterly view: standalone three-month facts or balances at period end. "
+                "Use Year to date for cumulative SEC durations when available."
+            )
+        if (trend["source_report_end"].notna() & ~trend["source_period_match"]).any():
+            st.warning(
+                "Some older facts are available only as comparisons in later filings. "
+                "Check Source report end before treating a link as the original-period filing."
+            )
+        if trend["source_report_end"].isna().any():
+            st.caption(
+                "A blank Source report end means historical SEC submission metadata was not "
+                "cached; the earliest available filing is linked but its report period is unverified."
+            )
+        display = trend[
+            [
+                "start",
+                "end",
+                "period_type",
+                "value",
+                "unit",
+                "filed",
+                "form",
+                "accession",
+                "source_report_end",
+            ]
+        ].copy()
+        display["SEC filing"] = display["accession"].map(
+            lambda accession: sec_filing_index_url(selected.cik, accession)
+        )
+        display = display.drop(columns="accession")
+        display["period_type"] = display["period_type"].map(PERIOD_LABELS)
+        display["value"] = display.apply(
+            lambda row: (
+                f"${float(row['value']):,.2f}/share"
+                if row["unit"] == "USD/shares"
+                else format_large(float(row["value"]), str(row["unit"]))
+            ),
+            axis=1,
         )
         st.dataframe(
-            trend[["end", "value", "unit", "fiscal_year", "fiscal_period", "filed", "form"]]
-            .sort_values("end", ascending=False)
-            .rename(
+            display.sort_values("end", ascending=False).rename(
                 columns={
+                    "start": "Period start",
                     "end": "Period end",
                     "value": "Value",
                     "unit": "Unit",
-                    "fiscal_year": "Fiscal year",
-                    "fiscal_period": "Fiscal period",
-                    "filed": "Filed",
+                    "period_type": "Fact duration",
+                    "filed": "Source filing date",
                     "form": "Form",
+                    "source_report_end": "Source report end",
                 }
             ),
             width="stretch",
             hide_index=True,
+            column_config={"SEC filing": st.column_config.LinkColumn(display_text="View filing ↗")},
         )
 
 with filings_tab:
@@ -270,7 +340,10 @@ with filings_tab:
         )
 
 with raw_tab:
-    st.caption("Detailed normalized Company Facts records for validation and export.")
+    st.caption(
+        "Detailed Company Facts records for validation and export. Fiscal year/period are labels "
+        "of the source filing; start/end and fact duration describe each reported value."
+    )
     raw_metrics = st.multiselect(
         "Filter metrics", available_metrics, format_func=metric_label, default=[]
     )

@@ -5,7 +5,7 @@ import json
 
 from .config import get_settings
 from .evaluation import evaluate, evaluate_answers, evaluate_with_langsmith
-from .pipeline import build_artifacts, download, index, parse
+from .pipeline import build_artifacts, build_structured_artifacts, download, index, parse
 from .preflight import run_preflight
 
 
@@ -26,6 +26,7 @@ def main() -> None:
             "download",
             "parse",
             "build-artifacts",
+            "build-structured",
             "index",
             "evaluate",
             "evaluate-answers",
@@ -45,6 +46,8 @@ def main() -> None:
         parse(settings)
     if args.command in {"build-artifacts", "all"}:
         build_artifacts(settings)
+    if args.command == "build-structured":
+        build_structured_artifacts(settings)
     if args.command in {"index", "all"}:
         index(settings)
     if args.command in {"evaluate", "all"}:

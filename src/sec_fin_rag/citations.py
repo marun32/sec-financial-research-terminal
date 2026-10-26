@@ -7,11 +7,20 @@ from .models import Citation
 
 SOURCE_MARKER = re.compile(r"\[Source\s+(\d+)\]", re.IGNORECASE)
 DECORATED_SOURCE_MARKER = re.compile(r"【\s*(?:Source\s*)?(\d+)(?:\s*†[^】]*)?\s*】", re.IGNORECASE)
+MULTI_SOURCE_MARKER = re.compile(
+    r"\[\s*Sources?\s+\d+(?:\s*(?:,|&|and)\s*\d+)+\s*\]", re.IGNORECASE
+)
 
 
 def normalize_source_markers(answer: str) -> str:
     """Normalize common model citation glyphs without inventing source numbers."""
-    return DECORATED_SOURCE_MARKER.sub(lambda match: f"[Source {match.group(1)}]", answer)
+    normalized = DECORATED_SOURCE_MARKER.sub(lambda match: f"[Source {match.group(1)}]", answer)
+    return MULTI_SOURCE_MARKER.sub(
+        lambda match: " ".join(
+            f"[Source {number}]" for number in re.findall(r"\d+", match.group())
+        ),
+        normalized,
+    )
 
 
 def number_citations(citations: list[Citation]) -> list[Citation]:

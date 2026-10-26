@@ -219,3 +219,64 @@ def test_conversation_context_does_not_leak_between_threads() -> None:
 
     assert result["tickers"] == []
     assert result["route"] == "filings"
+
+
+def test_progress_reports_actual_graph_nodes_and_preserves_thread_state() -> None:
+    issuers = load_issuers(
+        Path(__file__).resolve().parents[1] / "data" / "manifest" / "issuers.json"
+    )
+    observed: list[str] = []
+    graph = ResearchGraph(
+        issuers=issuers,
+        retrieve=lambda _question, _tickers, _filters: [],
+        fundamentals=lambda _question, _tickers, _filters: [],
+        market=lambda _tickers: [],
+        generate=lambda _question, _chunks, _evidence: "",
+        planner=lambda _question, _context: {
+            "tickers": ["AAPL"],
+            "metrics": ["revenue"],
+            "years": [],
+            "last_n_completed_years": 0,
+            "period_basis": "unspecified",
+            "quarter": None,
+            "operation": "lookup",
+            "needs_filing_text": False,
+        },
+    )
+
+    first = graph.invoke(
+        "What revenue did Apple report?",
+        thread_id="progress-thread",
+        on_step=lambda node, _update: observed.append(node),
+    )
+    followup = graph.invoke(
+        "How about for 2025?",
+        thread_id="progress-thread",
+        on_step=lambda node, _update: observed.append(node),
+    )
+
+    assert observed[:4] == ["plan", "route", "fundamentals", "answer"]
+    assert first["route"] == "fundamentals"
+    assert followup["tickers"] == ["AAPL"]
+    assert followup["filters"]["year"] == "2025"
+
+
+def test_progress_does_not_report_retrieval_for_unsupported_question() -> None:
+    issuers = load_issuers(
+        Path(__file__).resolve().parents[1] / "data" / "manifest" / "issuers.json"
+    )
+    observed: list[str] = []
+    graph = ResearchGraph(
+        issuers=issuers,
+        retrieve=lambda *_args: (_ for _ in ()).throw(AssertionError("retrieval must not run")),
+        fundamentals=lambda *_args: (_ for _ in ()).throw(AssertionError("facts must not run")),
+        market=lambda _tickers: [],
+        generate=lambda *_args: (_ for _ in ()).throw(AssertionError("generation must not run")),
+    )
+
+    graph.invoke(
+        "Should I buy Apple with my retirement savings?",
+        on_step=lambda node, _update: observed.append(node),
+    )
+
+    assert observed == ["plan", "route", "unsupported"]

@@ -80,9 +80,21 @@ class RetrievedChunk:
     metadata: dict[str, Any]
 
 
+class ResearchPlan(TypedDict):
+    tickers: list[str]
+    metrics: list[str]
+    years: list[int]
+    last_n_completed_years: int
+    period_basis: Literal["annual", "quarterly", "ytd", "unspecified"]
+    quarter: int | None
+    operation: Literal["lookup", "trend", "yoy", "narrative", "mixed", "market", "unsupported"]
+    needs_filing_text: bool
+
+
 class GraphState(TypedDict, total=False):
     question: str
     resolved_question: str
+    plan: ResearchPlan
     route: Literal["market", "fundamentals", "filings", "mixed", "unsupported"]
     tickers: list[str]
     filters: dict[str, Any]

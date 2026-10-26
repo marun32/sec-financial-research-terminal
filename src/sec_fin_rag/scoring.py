@@ -7,6 +7,8 @@ from functools import partial
 import numpy as np
 import pandas as pd
 
+from .fact_periods import annual_fact_rows
+
 SCORECARD_WEIGHTS: dict[str, dict[str, float]] = {
     "Growth": {"revenue_cagr_3y": 0.40, "revenue_growth_yoy": 0.30, "eps_growth": 0.30},
     "Profitability": {
@@ -42,10 +44,12 @@ def _annual_value(company: pd.DataFrame, periods: list[str], metric: str, offset
 def derive_company_metrics(fundamentals: pd.DataFrame) -> pd.DataFrame:
     if fundamentals.empty:
         return pd.DataFrame()
-    annual = fundamentals[
-        fundamentals["form"].isin(["10-K", "10-K/A"])
-        & fundamentals["fiscal_period"].isin(["FY", None])
-    ].copy()
+    annual = annual_fact_rows(
+        fundamentals[
+            fundamentals["form"].isin(["10-K", "10-K/A"])
+            & fundamentals["fiscal_period"].isin(["FY", None])
+        ]
+    )
     rows: list[dict[str, float | str]] = []
     for ticker, company in annual.groupby("ticker"):
         periods = sorted(company["end"].dropna().astype(str).unique(), reverse=True)

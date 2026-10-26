@@ -25,6 +25,7 @@ def test_derived_metrics_align_by_period_end_not_restating_fiscal_year() -> None
                     "sector": "Technology",
                     "metric": metric,
                     "value": value,
+                    "start": f"{end[:4]}-01-01",
                     "end": end,
                     # Comparative values in a 2025 filing all inherit fy=2025 from SEC facts.
                     "fiscal_year": 2025,
@@ -38,3 +39,33 @@ def test_derived_metrics_align_by_period_end_not_restating_fiscal_year() -> None
     assert result["fiscal_year"] == 2025
     assert result["revenue_growth_yoy"] == pytest.approx(0.25)
     assert result["net_margin"] == pytest.approx(0.20)
+
+
+def test_annual_scores_exclude_short_duration_facts_in_ten_k() -> None:
+    facts = pd.DataFrame(
+        [
+            {
+                "ticker": "EX",
+                "issuer": "Example",
+                "sector": "Technology",
+                "metric": metric,
+                "value": value,
+                "start": start,
+                "end": end,
+                "fiscal_period": "FY",
+                "form": "10-K",
+            }
+            for metric, value, start, end in (
+                ("revenue", 100.0, "2024-01-01", "2024-12-31"),
+                ("revenue", 150.0, "2025-01-01", "2025-12-31"),
+                ("revenue", 45.0, "2025-10-01", "2025-12-31"),
+                ("net_income", 30.0, "2025-01-01", "2025-12-31"),
+                ("operating_income", 45.0, "2025-01-01", "2025-12-31"),
+            )
+        ]
+    )
+
+    result = derive_company_metrics(facts).iloc[0]
+
+    assert result["revenue_growth_yoy"] == pytest.approx(0.5)
+    assert result["net_margin"] == pytest.approx(0.2)

@@ -10,7 +10,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 
 from .citations import number_citations, validate_answer_citations
-from .models import Citation, EvidenceItem, GraphState, Issuer, RetrievedChunk
+from .models import Citation, EvidenceItem, GraphState, Issuer, ResearchPlan, RetrievedChunk
 from .query import (
     infer_financial_metrics,
     resolve_tickers,
@@ -109,12 +109,14 @@ class ResearchGraph:
         fundamentals: Callable[[str, list[str], dict[str, Any]], list[EvidenceItem] | str],
         market: Callable[[list[str]], list[EvidenceItem] | str],
         generate: Callable[[str, list[RetrievedChunk], list[EvidenceItem]], str],
+        planner: Callable[[str, dict[str, Any]], ResearchPlan] | None = None,
     ):
         self.issuers = issuers
         self.retrieve_fn = retrieve
         self.fundamentals_fn = fundamentals
         self.market_fn = market
         self.generate_fn = generate
+        self.planner_fn = planner
         serializer = JsonPlusSerializer(
             allowed_msgpack_modules={
                 ("sec_fin_rag.models", "Citation"),
@@ -127,6 +129,7 @@ class ResearchGraph:
 
     def _build(self) -> Any:
         graph = StateGraph(GraphState)
+        graph.add_node("plan", self._plan)
         graph.add_node("route", self._route)
         graph.add_node("market", self._market)
         graph.add_node("fundamentals", self._fundamentals)
@@ -134,7 +137,8 @@ class ResearchGraph:
         graph.add_node("mixed", self._mixed)
         graph.add_node("unsupported", self._unsupported)
         graph.add_node("answer", self._answer)
-        graph.add_edge(START, "route")
+        graph.add_edge(START, "plan")
+        graph.add_edge("plan", "route")
         graph.add_conditional_edges(
             "route",
             lambda state: state["route"],
@@ -152,17 +156,41 @@ class ResearchGraph:
         graph.add_edge("answer", END)
         return graph.compile(checkpointer=self.checkpointer)
 
+    def _plan(self, state: GraphState) -> GraphState:
+        if self.planner_fn is None:
+            return {}
+        return {"plan": self.planner_fn(state["question"], state.get("conversation_context", {}))}
+
     def _route(self, state: GraphState) -> GraphState:
         question = state["question"]
         previous = state.get("conversation_context", {})
+        plan = state.get("plan")
         explicit_tickers = resolve_tickers(question, self.issuers)
         manual_tickers = state.get("input_tickers", [])
-        tickers = manual_tickers or explicit_tickers or list(previous.get("tickers", []))
+        tickers = (
+            manual_tickers
+            or explicit_tickers
+            or (plan["tickers"] if plan else [])
+            or list(previous.get("tickers", []))
+        )
 
         input_filters = dict(state.get("input_filters", {}))
         filters = with_inferred_year(question, with_inferred_form(question, input_filters))
+        if plan and (len(plan["years"]) > 1 or plan["last_n_completed_years"] > 1):
+            filters["year"] = "All"
+            filters["_planned_years"] = plan["years"]
+            filters["_last_n_completed_years"] = plan["last_n_completed_years"]
+            filters["_period_basis"] = plan["period_basis"]
+            filters["_quarter"] = plan["quarter"]
+            filters["_operation"] = plan["operation"]
+            filters["_needs_filing_text"] = plan["needs_filing_text"]
+            if plan["period_basis"] == "annual":
+                filters["form"] = "10-K"
+            elif plan["period_basis"] in {"quarterly", "ytd"}:
+                filters["form"] = "10-Q"
         if filters.get("year") in {None, "", "All"} and previous.get("year"):
-            filters["year"] = previous["year"]
+            if not plan or (not plan["years"] and not plan["last_n_completed_years"]):
+                filters["year"] = previous["year"]
         if filters.get("form") in {None, "", "All"} and previous.get("form") not in {
             None,
             "",
@@ -171,11 +199,21 @@ class ResearchGraph:
             filters["form"] = previous["form"]
 
         route = classify_route(question)
+        if (
+            route != "unsupported"
+            and plan
+            and plan["metrics"]
+            and plan["operation"] in {"lookup", "trend", "yoy"}
+        ):
+            if not any(term in question.lower() for term in MARKET_TERMS):
+                route = "mixed" if plan["needs_filing_text"] else "fundamentals"
         if not _has_route_signal(question) and previous.get("route"):
             route = previous["route"]
 
         explicit_metrics = infer_financial_metrics(question)
         metrics = explicit_metrics or list(previous.get("metrics", []))
+        if plan and plan["metrics"]:
+            metrics = plan["metrics"]
         context = {
             "tickers": tickers,
             "route": route,
@@ -188,6 +226,15 @@ class ResearchGraph:
             context_parts.append(f"companies: {', '.join(tickers)}")
         if context["year"]:
             context_parts.append(f"reporting year: {context['year']}")
+        if plan and (plan["years"] or plan["last_n_completed_years"]):
+            if plan["years"]:
+                context_parts.append(f"requested years: {', '.join(map(str, plan['years']))}")
+            else:
+                context_parts.append(
+                    f"latest {plan['last_n_completed_years']} completed annual periods"
+                )
+            context_parts.append(f"period basis: {plan['period_basis']}")
+            context_parts.append(f"operation: {plan['operation']}")
         if metrics:
             context_parts.append(f"metrics: {', '.join(metrics)}")
         context_parts.append(f"evidence route: {route}")
@@ -217,22 +264,24 @@ class ResearchGraph:
 
     def _fundamentals(self, state: GraphState) -> GraphState:
         resolved_question = state.get("resolved_question", state["question"])
+        filters = state.get("filters", {})
+        multi_year_numeric = bool(
+            filters.get("_planned_years") or filters.get("_last_n_completed_years")
+        ) and not bool(filters.get("_needs_filing_text"))
         return {
             "structured_evidence": self._normalize_evidence(
                 self.fundamentals_fn(
                     resolved_question,
                     state.get("tickers", []),
-                    state.get("filters", {}),
+                    filters,
                 ),
                 "xbrl",
             ),
             # Structured facts anchor the numbers; filing RAG supplies management explanation and
             # disclosure context for the same financial question.
-            "retrieved": self.retrieve_fn(
-                resolved_question,
-                state.get("tickers", []),
-                state.get("filters", {}),
-            ),
+            "retrieved": []
+            if multi_year_numeric
+            else self.retrieve_fn(resolved_question, state.get("tickers", []), filters),
         }
 
     def _filings(self, state: GraphState) -> GraphState:
@@ -349,16 +398,18 @@ class ResearchGraph:
         filters: dict[str, Any] | None = None,
         *,
         thread_id: str | None = None,
+        on_step: Callable[[str, GraphState], None] | None = None,
     ) -> GraphState:
         conversation_id = thread_id or uuid.uuid4().hex
-        return cast(
-            GraphState,
-            self.compiled.invoke(
-                {
-                    "question": question,
-                    "input_tickers": tickers or [],
-                    "input_filters": filters or {},
-                },
-                config={"configurable": {"thread_id": conversation_id}},
-            ),
-        )
+        graph_input = {
+            "question": question,
+            "input_tickers": tickers or [],
+            "input_filters": filters or {},
+        }
+        config = {"configurable": {"thread_id": conversation_id}}
+        if on_step is None:
+            return cast(GraphState, self.compiled.invoke(graph_input, config=config))
+        for update in self.compiled.stream(graph_input, config=config, stream_mode="updates"):
+            for node, values in update.items():
+                on_step(str(node), cast(GraphState, values))
+        return cast(GraphState, self.compiled.get_state(config).values)

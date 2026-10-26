@@ -46,7 +46,76 @@ with st.expander("Refine search (optional)", expanded=False):
         )
 
 
-def display_answer(message: dict[str, Any]) -> None:
+def _next_research_step(route: str, filters: dict[str, Any]) -> str:
+    if route == "unsupported":
+        return "Applying the research-scope guardrail…"
+    if route == "market":
+        return "Checking delayed market context…"
+    if route == "filings":
+        return "Searching and reranking SEC filings in Pinecone…"
+    if route == "mixed":
+        return "Collecting SEC facts and searching Pinecone filings…"
+    numeric_range = bool(
+        filters.get("_planned_years") or filters.get("_last_n_completed_years")
+    ) and not bool(filters.get("_needs_filing_text"))
+    return (
+        "Reading comparable SEC XBRL facts…"
+        if numeric_range
+        else "Reading SEC facts and searching Pinecone filings…"
+    )
+
+
+def _completed_research_step(node: str, update: dict[str, Any]) -> tuple[int, str, str]:
+    if node == "plan":
+        plan = update.get("plan") or {}
+        years = plan.get("years") or []
+        period = (
+            f"{years[0]}–{years[-1]}"
+            if years
+            else f"latest {plan['last_n_completed_years']} completed years"
+            if plan.get("last_n_completed_years")
+            else "requested period"
+        )
+        scope = ", ".join(plan.get("tickers") or []) or "covered companies"
+        return 25, f"Research plan · {scope} · {period}", "Selecting the evidence path…"
+    if node == "route":
+        route = str(update.get("route", "filings"))
+        return (
+            45,
+            f"Evidence route · {route.replace('_', ' ').title()}",
+            _next_research_step(route, update.get("filters") or {}),
+        )
+    if node in {"fundamentals", "filings", "mixed", "market"}:
+        facts = len(update.get("structured_evidence") or [])
+        passages = len(update.get("retrieved") or [])
+        label = f"Evidence collected · {facts} structured source(s), {passages} filing passage(s)"
+        return 78, label, "Drafting the answer and checking references…"
+    if node == "answer":
+        validation = update.get("citation_validation") or {}
+        references = len(update.get("citations") or [])
+        detail = (
+            "Citation check failed; a safe response was returned"
+            if validation.get("failed_closed")
+            else f"Response finalized · {references} reference(s)"
+        )
+        return 100, detail, "Research complete"
+    if node == "unsupported":
+        return 100, "Research-scope check · no retrieval or generation", "Research complete"
+    return 100, "Research complete", "Research complete"
+
+
+def display_answer(message: dict[str, Any], *, show_steps: bool = True) -> None:
+    steps = message.get("research_steps") or []
+    if show_steps and steps:
+        failed = bool(message.get("research_failed"))
+        with st.status(
+            "Research steps · interrupted" if failed else "Research steps · complete",
+            state="error" if failed else "complete",
+            expanded=False,
+        ):
+            st.progress(100 if not failed else min(95, len(steps) * 20))
+            for step in steps:
+                st.markdown(f"✓ {step}" if not failed else f"• {step}")
     st.markdown(str(message["content"]))
     references = message.get("references", [])
     if references:
@@ -117,14 +186,29 @@ if question:
     with st.chat_message("user"):
         st.markdown(question)
     with st.chat_message("assistant"):
+        research_steps: list[str] = []
+        with st.status("Planning your research question…", expanded=True) as research_status:
+            progress_bar = st.progress(8, text="Understanding the request and research scope")
+            step_log = st.empty()
+
+        def show_graph_step(node: str, update: dict[str, Any]) -> None:
+            percent, completed, upcoming = _completed_research_step(node, update)
+            research_steps.append(completed)
+            progress_bar.progress(percent, text=upcoming)
+            step_log.markdown("\n\n".join(f"✓ {step}" for step in research_steps))
+            research_status.update(label=upcoming)
+
         try:
-            with st.spinner("Reviewing filings and checking evidence…"):
-                result = runtime().graph.invoke(
-                    question,
-                    tickers=selected,
-                    filters={"form": form, "year": year, "namespace": strategy},
-                    thread_id=st.session_state.research_thread_id,
-                )
+            result = runtime().graph.invoke(
+                question,
+                tickers=selected,
+                filters={"form": form, "year": year, "namespace": strategy},
+                thread_id=st.session_state.research_thread_id,
+                on_step=show_graph_step,
+            )
+            research_status.update(
+                label="Research steps · complete", state="complete", expanded=False
+            )
             answer = re.sub(r"\[Source\s+(\d+)\]", r"[\1]", str(result["answer"]))
             excerpts = {item.chunk_id: item.text for item in result.get("retrieved", [])}
             excerpts.update(
@@ -150,14 +234,20 @@ if question:
                 "role": "assistant",
                 "content": answer,
                 "references": references,
+                "research_steps": research_steps,
                 "metadata": {
                     "route": result.get("route", "research"),
                     "tickers": result.get("tickers", selected),
                     "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
                 },
             }
-            display_answer(assistant_message)
+            display_answer(assistant_message, show_steps=False)
         except Exception as error:
+            research_steps.append("Research service interrupted; no answer was generated")
+            step_log.markdown("\n\n".join(f"• {step}" for step in research_steps))
+            research_status.update(
+                label="Research steps · interrupted", state="error", expanded=False
+            )
             assistant_message = {
                 "role": "assistant",
                 "content": (
@@ -165,6 +255,8 @@ if question:
                     f"intact; verify service connectivity and try again. ({type(error).__name__})"
                 ),
                 "references": [],
+                "research_steps": research_steps,
+                "research_failed": True,
                 "metadata": {},
             }
             st.error(assistant_message["content"])

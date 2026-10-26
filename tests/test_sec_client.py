@@ -124,3 +124,25 @@ def test_archive_is_not_loaded_when_recent_submissions_are_complete(
         completed = client.complete_submissions(issuer, submissions)
 
     assert client._has_filing_targets(client.select_filings(issuer, completed))
+
+
+def test_historical_submission_cache_fetches_metadata_not_future_segments(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    issuer = Issuer("Example", ("EX",), 1, "Technology", "2026-09-30")
+    submissions = {
+        "filings": {
+            "files": [
+                {"name": "older.json", "filingFrom": "2010-01-01"},
+                {"name": "future.json", "filingFrom": "2026-10-01"},
+            ]
+        }
+    }
+    with SECClient("Tester tester@example.com", tmp_path) as client:
+        requested: list[str] = []
+        monkeypatch.setattr(  # type: ignore[attr-defined]
+            client, "submission_archive", lambda name: requested.append(name)
+        )
+        client.cache_submission_history(issuer, submissions)
+
+    assert requested == ["older.json"]

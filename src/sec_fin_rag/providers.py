@@ -100,6 +100,48 @@ class NebiusClient:
         )
         return AIMessage(content=response.choices[0].message.content or "")
 
+    def plan_question(
+        self, question: str, context: dict[str, Any], issuer_names: list[str]
+    ) -> dict[str, Any]:
+        """Ask the chat model for research intent, not for an answer or data availability."""
+        response = self.client.chat.completions.create(
+            model=self.settings.chat_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return only a JSON object describing the user's financial "
+                        "research request. Keys: tickers (list of primary tickers), "
+                        "metrics (list of normalized metric "
+                        "names), years (list of explicit calendar years; expand ranges), "
+                        "last_n_completed_years (integer), period_basis (annual, quarterly, ytd, "
+                        "or unspecified), quarter (1 to 4 or null), operation (lookup, trend, yoy, "
+                        "narrative, mixed, market, "
+                        "or unsupported), needs_filing_text (boolean). For 'last N years' choose "
+                        "completed annual periods unless the question specifies quarters. For a "
+                        "range such as 2023 to 2026 include every year. Do not infer that data is "
+                        "absent; this is planning only. Current conversation context can resolve "
+                        "follow-ups, but an explicit new request takes precedence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": question,
+                            "conversation_context": context,
+                            "issuers": issuer_names,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        return payload if isinstance(payload, dict) else {}
+
     def answer_chain(self) -> RunnableSerializable[dict[str, str], str]:
         """Return the LCEL chain used for grounded answer generation."""
         prompt = ChatPromptTemplate.from_messages(
@@ -113,12 +155,26 @@ class NebiusClient:
                     "Use short paragraphs and compact tables only when they improve comparison. "
                     "Every material factual claim must end with one or more inline citations in "
                     "the exact form [Source N]. Use only source numbers present in the evidence. "
+                    "Use separate [Source N] markers for two-source calculations. Do not append "
+                    "an uncited recap or key-points section. "
                     "Cite every substantive bullet, table row, calculation, and summary sentence. "
                     "Do not relabel a broad metric such as total revenue as a narrower requested "
                     "metric such as automotive revenue. Do not change signs, periods, or units. "
                     "Never treat omission from retrieved excerpts as proof that a filing or issuer "
                     "has no such disclosure. Say only that the retrieved evidence does not "
                     "establish the requested fact, and do not build comparisons from absence. "
+                    "For SEC XBRL, start/end and fact_duration describe the reported amount; "
+                    "source_report_end is the source filing's report period, which can differ "
+                    "from the fact period for a comparative amount. Never call a comparative "
+                    "fact the original-period filing. Filing date and fiscal-year labels "
+                    "describe the source filing. A 3-month "
+                    "amount is a standalone quarter; 6- and 9-month amounts are cumulative. "
+                    "Never present a year-to-date amount as a standalone quarter. For a year "
+                    "without a specified quarter, prefer an available full-year 10-K fact. "
+                    "For a multi-year growth question, calculate annual YoY only from adjacent "
+                    "full-year facts. If the latest requested year lacks a full-year fact but "
+                    "matching current/prior interim durations are supplied, calculate their "
+                    "YoY growth separately and label it interim, citing both periods. "
                     "Never give personalized investment advice. If evidence is insufficient, say "
                     "so explicitly. Preserve reporting periods and units.",
                 ),
@@ -165,7 +221,8 @@ class NebiusClient:
                         "copying raw JSON, metadata, or long evidence passages. Every material "
                         "claim must end with [Source N]. Cite every substantive bullet, table row, "
                         "calculation, and summary sentence. Do not infer a requested submetric "
-                        "from a broader metric, and preserve signs, periods, and units exactly. "
+                        "from a broader metric. Omit uncited recap sections. "
+                        "Preserve signs, periods, and units exactly. "
                         "Never infer that a filing or issuer lacks a disclosure merely because it "
                         "is absent from retrieved excerpts; describe that as an evidence "
                         "limitation. "

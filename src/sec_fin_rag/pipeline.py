@@ -70,19 +70,25 @@ def _load_blocks(settings: Settings) -> list[DocumentBlock]:
     return [DocumentBlock(**item) for item in read_jsonl(settings.processed_dir / "blocks.jsonl")]
 
 
-def build_artifacts(settings: Settings) -> tuple[list[Chunk], list[Chunk]]:
+def build_structured_artifacts(settings: Settings, *, total_stages: int = 3) -> pd.DataFrame:
+    """Rebuild XBRL facts, filing catalog, and scorecards without touching chunk indexes."""
     settings.ensure_local_dirs()
-    print("[1/6] Building normalized SEC fundamentals...", flush=True)
+    print(f"[1/{total_stages}] Building normalized SEC fundamentals...", flush=True)
     issuers = load_issuers(settings.manifest_path)
     fundamentals = build_fundamentals(
         issuers, settings.raw_dir, settings.app_data_dir / "fundamentals.parquet"
     )
-    print("[2/6] Building authoritative filing catalog...", flush=True)
+    print(f"[2/{total_stages}] Building authoritative filing catalog...", flush=True)
     build_filing_catalog(settings.raw_dir, fundamentals, settings.app_data_dir / "filings.parquet")
-    print("[3/6] Calculating scorecards...", flush=True)
+    print(f"[3/{total_stages}] Calculating scorecards...", flush=True)
     score_companies(derive_company_metrics(fundamentals)).to_parquet(
         settings.app_data_dir / "scorecards.parquet", index=False
     )
+    return fundamentals
+
+
+def build_artifacts(settings: Settings) -> tuple[list[Chunk], list[Chunk]]:
+    build_structured_artifacts(settings, total_stages=6)
     print("[4/6] Loading the embedding-model tokenizer and building fixed chunks...", flush=True)
     blocks = _load_blocks(settings)
     tokenizer = load_tokenizer(settings.embedding_model)
